@@ -1,0 +1,17 @@
+# Optional: MongoDB in Docker for local development (`npm run db:up`).
+# Skip this if you installed MongoDB Community Server or use MongoDB Atlas.
+services:
+  mongo:
+    image: mongo:8
+    container_name: changelog-hub-mongo
+    restart: unless-stopped
+    ports:
+      # Defaults to the standard 27017. If something else on your machine already uses that
+      # port (a local MongoDB install or another project), put MONGO_PORT=27019 in a .env
+      # file next to this one and point MONGODB_URI in server/.env at the same port.
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:

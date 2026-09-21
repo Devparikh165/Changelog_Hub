@@ -1,0 +1,22 @@
+# Dependencies & builds
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# Local data — never commit
+.env
+.env.local
+server/uploads/
+
+# Leftovers from the earlier Python version
+.venv/
+__pycache__/
+
+# Editors / OS / logs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

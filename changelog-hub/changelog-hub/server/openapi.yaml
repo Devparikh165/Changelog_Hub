@@ -1,0 +1,369 @@
+openapi: 3.1.0
+info:
+  title: Changelog Hub API
+  version: 1.0.0
+  description: |
+    Changelog & Product Updates Widget: publishing studio, public timeline, "What's new"
+    notification center and JSON feed. Node.js + Express + MongoDB.
+
+    **Auth.** Two httpOnly cookies: `access_token` (JWT, 15 min) and `refresh_token` (JWT, 7 days,
+    sent only to `/api/v1/auth`). On `401 token_expired`, call `POST /api/v1/auth/refresh` and retry.
+    Every refresh rotates the refresh token; replaying an old one revokes the whole session.
+    API tools can also send `Authorization: Bearer <access token>`.
+
+    **Try it here:** call `POST /auth/login` below; the browser keeps the cookies for the other calls.
+
+    **Errors:** `{"detail": {"code": "not_found", "message": "Update not found"}}`, and for validation
+    (422) `{"detail": [{"loc": ["body", "title"], "msg": "Title is required", "type": "too_small"}]}`.
+servers:
+  - url: /api/v1
+tags:
+  - { name: auth, description: Signup, verification, login, token rotation, password reset }
+  - { name: changelog, description: Public timeline, reactions, unread tracker and JSON feed }
+  - { name: admin, description: Publishing studio (admin role required) }
+  - { name: meta }
+
+components:
+  securitySchemes:
+    cookieAuth: { type: apiKey, in: cookie, name: access_token }
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Error:
+      type: object
+      properties:
+        detail:
+          type: object
+          properties:
+            code: { type: string, example: not_found }
+            message: { type: string, example: Update not found }
+    ValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            properties:
+              loc: { type: array, items: { type: [string, integer] }, example: [body, title] }
+              msg: { type: string }
+              type: { type: string }
+    Message:
+      type: object
+      properties: { message: { type: string } }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { type: string, enum: [user, admin] }
+        isVerified: { type: boolean }
+        lastViewedChangelogDate: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    Session:
+      type: object
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        accessTokenExpiresAt: { type: string, format: date-time }
+    Reactions:
+      type: object
+      properties:
+        heart: { type: integer }
+        tada: { type: integer }
+        rocket: { type: integer }
+    Entry:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        slug: { type: string }
+        contentMarkdown: { type: string }
+        category: { type: string, enum: [new, improved, fixed] }
+        coverImage: { type: [string, "null"] }
+        status: { type: string, enum: [draft, published] }
+        publishedAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        author:
+          type: [object, "null"]
+          properties: { id: { type: string }, name: { type: string } }
+        reactions: { $ref: "#/components/schemas/Reactions" }
+        viewerReactions: { type: array, items: { type: string, enum: [heart, tada, rocket] } }
+    EntryPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Entry" } }
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasMore: { type: boolean }
+    EntryInput:
+      type: object
+      properties:
+        title: { type: string, maxLength: 160 }
+        slug: { type: [string, "null"], description: "Lowercase words joined by hyphens; empty = generated from the title" }
+        contentMarkdown: { type: string, maxLength: 100000 }
+        category: { type: string, enum: [new, improved, fixed], default: new }
+        coverImage: { type: [string, "null"], description: "/uploads/… or an http(s) URL" }
+        status: { type: string, enum: [draft, published], default: draft }
+        publishedAt: { type: [string, "null"], format: date-time, description: "Empty + published = now; a future date schedules it" }
+    Unread:
+      type: object
+      properties:
+        unread: { type: integer }
+        lastViewedChangelogDate: { type: [string, "null"], format: date-time }
+        latestPublishedAt: { type: [string, "null"], format: date-time }
+  responses:
+    Unauthorized: { description: "Not signed in, or the access token expired (`token_expired`)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Forbidden: { description: Signed in but not allowed, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    NotFound: { description: Not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Invalid: { description: Validation failed, content: { application/json: { schema: { $ref: "#/components/schemas/ValidationError" } } } }
+    RateLimited: { description: Too many attempts (per IP, per endpoint), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  parameters:
+    EntryId: { name: id, in: path, required: true, schema: { type: string } }
+
+paths:
+  /health:
+    get:
+      tags: [meta]
+      summary: Liveness and database connectivity
+      responses: { "200": { description: OK }, "503": { description: Database unavailable } }
+
+  /auth/signup:
+    post:
+      tags: [auth]
+      summary: Create an account and email a verification link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string, example: Ada Lovelace }
+                email: { type: string, example: ada@example.com }
+                password: { type: string, example: Secret123, description: "8+ characters with a letter and a number" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Message" } } } }
+        "409": { description: "Email already registered (`email_taken`)" }
+        "422": { $ref: "#/components/responses/Invalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Confirm an email address (single-use, 24 h)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [token], properties: { token: { type: string } } } } } }
+      responses:
+        "200": { description: Verified, content: { application/json: { schema: { $ref: "#/components/schemas/Message" } } } }
+        "400": { description: "Invalid, used (`invalid_token`) or expired (`token_expired`) link" }
+  /auth/resend-verification:
+    post:
+      tags: [auth]
+      summary: Send a new verification link (always 200)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email], properties: { email: { type: string } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Message" } } } } }
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Sign in; sets the access, refresh and session_hint cookies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: demo@changelog.dev }
+                password: { type: string, example: Demo@12345 }
+      responses:
+        "200": { description: Signed in, content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+        "401": { description: "Wrong email or password (`invalid_credentials`)" }
+        "403": { description: "Email not verified (`email_not_verified`)" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate the token pair (uses the refresh_token cookie)
+      description: "A replayed, already-rotated refresh token revokes the whole session (`refresh_reuse_detected`). Two tabs refreshing within 10 s are treated as a race, not theft."
+      responses:
+        "200": { description: New cookies set, content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the session and clear cookies
+      responses: { "204": { description: Signed out } }
+  /auth/forgot-password:
+    post:
+      tags: [auth]
+      summary: Email a password reset link (always 200; single-use, 30 min)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email], properties: { email: { type: string } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Message" } } } } }
+  /auth/reset-password:
+    post:
+      tags: [auth]
+      summary: Set a new password; ends every session of the account
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [token, password], properties: { token: { type: string }, password: { type: string } } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Message" } } } }
+        "400": { description: Invalid or expired link }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: The signed-in user
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/User" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /changelog:
+    get:
+      tags: [changelog]
+      summary: Public timeline (published and due), newest first
+      parameters:
+        - { name: category, in: query, schema: { type: string, enum: [new, improved, fixed] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 100 }, description: "Keyword search: every word must appear in the title or body" }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 10, maximum: 50 } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EntryPage" } } } } }
+  /changelog/feed:
+    get:
+      tags: [changelog]
+      summary: JSON Feed 1.1 for external integrations (CORS-open, cached 60 s)
+      parameters:
+        - { name: category, in: query, schema: { type: string, enum: [new, improved, fixed] } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses: { "200": { description: "JSON Feed (https://jsonfeed.org/version/1.1) with sanitized HTML" } }
+  /changelog/unread-count:
+    get:
+      tags: [changelog]
+      summary: Unread counter for the bell badge
+      description: "Signed in: compares the user's lastViewedChangelogDate with publication dates. Anonymous widgets pass `since`."
+      parameters:
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Unread" } } } } }
+  /changelog/mark-read:
+    post:
+      tags: [changelog]
+      summary: Mark every release as read (opening the drawer)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Unread" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /changelog/{slug}:
+    get:
+      tags: [changelog]
+      summary: One published update
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Entry" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /changelog/{id}/reactions:
+    post:
+      tags: [changelog]
+      summary: Toggle ❤️ 🎉 🚀 (one of each per user; a second call removes it)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/EntryId" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reaction], properties: { reaction: { type: string, enum: [heart, tada, rocket] } } } } } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entryId: { type: string }
+                  reactions: { $ref: "#/components/schemas/Reactions" }
+                  viewerReactions: { type: array, items: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/entries:
+    get:
+      tags: [admin]
+      summary: All entries including drafts (drafts first), with status counts
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [draft, published] } }
+        - { name: category, in: query, schema: { type: string, enum: [new, improved, fixed] } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200": { description: "EntryPage plus counts {all, draft, published}" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [admin]
+      summary: Create an update
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/EntryInput" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Entry" } } } }
+        "409": { description: "Slug already used (`slug_taken`)" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /admin/entries/{id}:
+    parameters: [{ $ref: "#/components/parameters/EntryId" }]
+    get:
+      tags: [admin]
+      summary: Read one update (drafts too)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Entry" } } } }, "404": { $ref: "#/components/responses/NotFound" } }
+    patch:
+      tags: [admin]
+      summary: Partial update (only the fields you send change)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/EntryInput" } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Entry" } } } }, "409": { description: Slug taken } }
+    delete:
+      tags: [admin]
+      summary: Delete an update and its reactions
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/NotFound" } }
+  /admin/entries/{id}/publish:
+    post:
+      tags: [admin]
+      summary: Publish now (or at its scheduled publishedAt)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/EntryId" }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Entry" } } } } }
+  /admin/entries/{id}/unpublish:
+    post:
+      tags: [admin]
+      summary: Back to draft
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/EntryId" }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Entry" } } } } }
+  /admin/uploads:
+    post:
+      tags: [admin]
+      summary: Upload an image (PNG, JPEG, GIF or WebP, max 5 MB; type checked from the file's bytes)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema: { type: object, properties: { url: { type: string, example: /uploads/3f2a….png }, size: { type: integer }, contentType: { type: string } } }
+        "413": { description: File too large }
+        "415": { description: Not a supported image }
+
+  /dev/mailbox:
+    get:
+      tags: [meta]
+      summary: Simulated email inbox (404 in production or when EMAIL_SIMULATION=false)
+      parameters:
+        - { name: email, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses: { "200": { description: "Newest first: id, toEmail, subject, body, actionUrl, createdAt" } }

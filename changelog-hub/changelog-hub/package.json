@@ -1,0 +1,26 @@
+{
+  "name": "changelog-hub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Changelog & Product Updates Widget — MERN stack (MongoDB, Express, React, Node.js).",
+  "scripts": {
+    "install:all": "npm install && npm install --prefix server && npm install --prefix frontend",
+    "setup": "node scripts/setup-env.mjs",
+    "db:up": "docker compose up -d mongo",
+    "db:down": "docker compose down",
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"npm run dev --prefix server\" \"npm run dev --prefix frontend\"",
+    "dev:server": "npm run dev --prefix server",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "seed": "npm run seed --prefix server",
+    "seed:reset": "npm run seed --prefix server -- --reset",
+    "test": "npm test --prefix server",
+    "build": "npm run build --prefix server && npm run build --prefix frontend",
+    "start": "npm start --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  },
+  "engines": {
+    "node": ">=20.12"
+  }
+}
